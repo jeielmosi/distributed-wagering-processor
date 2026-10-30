@@ -61,8 +61,9 @@ docker compose down -v
 ```
 
 A aplicação fica em `http://localhost:3000` (ou na porta definida em `APP_PORT`).
-Cada resposta inclui `X-Instance-Id`; `X-Correlation-Id` é gerado quando ausente
-e ecoado.
+Cada resposta inclui `X-Instance-Id`. Para rotas mapeadas, `X-Correlation-Id` é
+gerado quando ausente e ecoado; respostas 404 de roteamento não passam pelo
+interceptor e não recebem esse header.
 
 O Compose publica `app`, `postgres` e `localstack` apenas em `127.0.0.1`
 (loopback), não em todas as interfaces. Isso reduz a exposição local, mas não
@@ -98,7 +99,7 @@ bun run start:prod   # bun dist/main.js
 
 | Variável | Default | Função |
 |---|---|---|
-| `PORT` | `3000` | porta HTTP |
+| `PORT` | `3000` | porta HTTP do processo local; no Compose o container fixa `3000` e `APP_PORT` controla a porta publicada no host |
 | `INSTANCE_ID` | `<hostname>:<pid>` (app) / `app-1` (Compose) | identificador de instância em logs/métricas; o `.env.example` usa `local-dev` |
 | `DATABASE_URL` | `postgresql://postgres:postgres@localhost:5432/wagering` | PostgreSQL |
 | `SQS_ENDPOINT` | `http://localhost:4566` | endpoint LocalStack/AWS |
@@ -135,9 +136,10 @@ quando a variável não existe, o Compose usa `app-1` quando ela não é definid
 o `.env.example` (copiado para `.env` no setup local) define `local-dev`.
 
 No Compose, o serviço `app` injeta explicitamente apenas um subconjunto dessas
-variáveis. `OUTBOX_PUBLISH_CONCURRENCY`, `LOG_LEVEL`, `MESSAGING_POLL_INTERVAL_MS`
-e outras não são repassadas pelo `docker-compose.yml`; ajuste o `environment` do
-serviço `app` ou execute a aplicação fora do container para alterá-las.
+variáveis. `PORT`, `MESSAGING_ENABLED`, `OUTBOX_PUBLISH_CONCURRENCY`,
+`LOG_LEVEL`, `MESSAGING_POLL_INTERVAL_MS` e outras não são repassadas pelo
+`docker-compose.yml`; ajuste o `environment` do serviço `app` ou execute a
+aplicação fora do container para alterá-las.
 
 Em AWS, defina `SQS_ENDPOINT` explicitamente (por exemplo,
 `https://sqs.us-east-1.amazonaws.com`); o default é o LocalStack local.
@@ -328,7 +330,7 @@ enviados à DLQ. Detalhes em [`ARCHITECTURE.md`](ARCHITECTURE.md) §4.4.
 | `outbox_pending` / `outbox_dead_lettered` | backlog da outbox e eventos mortos |
 | `outbox_publish_lag_seconds` | atraso entre `occurred_at` e `published_at` |
 | `reconciliation_divergences_total` | qualquer valor > 0 exige investigação |
-| `wager_preline_failures_total{failureCode,httpStatus}` | falhas antes de criar a transação (payload, wallet, conflito, transitório) |
+| `wager_preline_failures_total{failureCode,httpStatus}` | falhas HTTP sem `transactionId` (pré-linha, 404 de consultas e conflitos de idempotência sem nova linha; exclui rota inexistente) |
 | `wager_uncorrelated_wins_total` | `WIN` sem referência rejeitado com `REFERENCE_REQUIRED` |
 | `db_lock_wait_seconds` | contenção no hot wallet |
 | `db_lock_timeouts_total` | `55P03`; cliente deve reenviar com a mesma key |
@@ -509,7 +511,7 @@ load/                  # k6.js e resultados locais (ignorados pelo Git)
 | Concorrência (20) | lock pessimista por wallet em `src/infrastructure/persistence/repositories/mikro-orm-wallet.repository.ts`; ledger e wallet na mesma transação | `test/concurrency/wagering-concurrency.spec.ts` (22 testes: cenários 5.1–5.9 e 5.12–5.19, com subcenários 5.6b/5.6c), incluindo 3 processos Bun, 50 apostas, disputa de saldo e settlements concorrentes |
 | Idempotência (15) | `src/application/services/idempotency.service.ts`, `src/domain/messaging/inbox-message.ts`, índices únicos da migration | `src/application/services/idempotency.service.spec.ts`, `test/integration/wagering-api.e2e.spec.ts`, `test/integration/sqs-messaging.spec.ts` (redelivery, payload divergente, 50 duplicatas concorrentes) |
 | Mensageria e falhas (15) | `src/infrastructure/messaging/wager-transaction.consumer.ts`, `outbox-publisher.worker.ts`, `pending-reference.worker.ts`, outbox transacional | `test/integration/sqs-messaging.spec.ts` (DLQ direta, redrive 5 receives, outbox, pending reference), `test/concurrency/wagering-concurrency.spec.ts` (crash pós-commit, SIGTERM com mensagem em voo) |
-| Modelagem e arquitetura (10) | `src/domain`, `src/application/ports` (`LoggerPort`/`MetricsPort`/`ReadinessPort`/`PersistenceErrorTranslatorPort`), use cases e adapters; invariantes encapsuladas | `ARCHITECTURE.md` (§4–§6), `src/application/architecture.spec.ts` (fronteiras application/presentation/domain/shared) e testes de domínio/use case em `src/**/*.spec.ts` |
+| Modelagem e arquitetura (10) | `src/domain`, `src/application/ports` (`LoggerPort`/`MetricsPort`/`ReadinessPort`/`PersistenceErrorTranslatorPort`), use cases e adapters; invariantes encapsuladas | `ARCHITECTURE.md` (§4–§6), `src/application/architecture.spec.ts` (`application`/`presentation` não importam `infrastructure`; `domain`/`shared` não importam camadas externas) e testes de domínio/use case em `src/**/*.spec.ts` |
 | Testes (10) | unitários, integração com PostgreSQL/LocalStack reais, concorrência com processos reais, smoke e e2e | `bun run test:unit`, `bun run test:integration`, `bun run test:concurrency`, `bun run test:smoke`, `bun run test:e2e` e `bun run test` |
 | Observabilidade (5) | `src/infrastructure/observability/metrics.ts`, `structured-logger.ts`, `safe-error.ts`, `readiness.service.ts`, `/metrics`, `/health/live`, `/health/ready` | `src/infrastructure/observability/metrics.spec.ts`, `structured-logger.spec.ts`, `wager-transaction.consumer.spec.ts` (não vazamento de valor), `readiness.service.spec.ts`, `test/integration/observability.e2e.spec.ts` |
 | Documentação (5) | `README.md`, `ARCHITECTURE.md`, `LOAD_TEST.md` | esta matriz + seções de setup, API, mensageria, métricas e trade-offs |

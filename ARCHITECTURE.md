@@ -344,8 +344,11 @@ configuração incorreta da fila.
 - Fast path sem lock + **recheck obrigatório após o lock**, na mesma transação,
   antes de qualquer mutação de saldo. O recheck fecha a corrida entre requisições
   que passaram pelo fast path vazio.
-- O UNIQUE `(provider_id, idempotency_key)` é o árbitro final. Em `23505`, a
-  transação é abortada; uma nova transação relê e discrimina a constraint:
+- A unicidade de `(provider_id, idempotency_key)` é garantida por índices únicos
+  parciais (`uq_wager_tx_idempotency_provider`, para provider não nulo, e
+  `uq_wager_tx_idempotency_opening`, para `OPENING`). Eles são o árbitro final.
+  Em `23505`, a transação é abortada; uma nova transação relê e discrimina a
+  constraint:
   - idempotência → replay (ou `409` se `payload_hash` divergir);
   - `(provider_id, external_transaction_id)` → `409 DUPLICATE_EXTERNAL_TRANSACTION`;
   - `uq_wager_tx_reversal` → reinserir a transação atual como `REJECTED`
@@ -588,7 +591,7 @@ autenticado e não deve ser publicado na internet.
 | `outbox_pending` / `outbox_dead_lettered` | gauge | — | contagem no PostgreSQL |
 | `outbox_publish_lag_seconds` | histogram | — | `published_at - occurred_at` |
 | `reconciliation_divergences_total` | counter | — | reconciliação com `consistent=false` |
-| `wager_preline_failures_total` | counter | `failureCode`, `httpStatus` | falhas HTTP antes da linha (sem `transactionId`) |
+| `wager_preline_failures_total` | counter | `failureCode`, `httpStatus` | falhas HTTP sem `transactionId` (pré-linha, 404 de consultas e conflitos sem nova linha; exclui `ROUTE_NOT_FOUND`) |
 | `wager_uncorrelated_wins_total` | counter | — | `WIN` sem referência rejeitado |
 | `db_lock_wait_seconds` | histogram | — | aquisição do `SELECT FOR UPDATE` |
 | `db_lock_timeouts_total` | counter | — | SQLSTATE `55P03` |
@@ -683,8 +686,10 @@ Todo não-2xx usa o envelope único:
 `{ failureCode, message, correlationId?, transactionId?, status?, idempotentReplay?, details? }`.
 Campos de transação aparecem apenas quando há transação.
 
-`X-Correlation-Id` é opcional (gera UUIDv7 se ausente, valida 1..255, ecoa);
-`X-Instance-Id` é ecoado em todas as respostas para testes/dev.
+`X-Correlation-Id` é opcional (gera UUIDv7 se ausente, valida 1..255 e ecoa em
+rotas mapeadas); respostas 404 de roteamento não passam pelo interceptor e não
+recebem esse header. `X-Instance-Id` é ecoado em todas as respostas para
+testes/dev.
 
 O CHALLENGE *recomenda* o default `"{providerId}:{externalTransactionId}"` para a
 `Idempotency-Key`, mas ela é **obrigatória e explícita**: não há derivação
@@ -779,8 +784,9 @@ período ou wallet. Qualquer evolução nessa direção deve preservar
 
 - **Unitários** (`bun run test:unit`): domínio puro, use cases, services, logger,
   métricas, readiness, collector de DLQ, tradutor de erros PostgreSQL e regras de
-  dependência (`src/application/architecture.spec.ts`, cobrindo `application`,
-  `presentation` e `domain`/`shared`). Cobrem também a taxonomia com
+  dependência (`src/application/architecture.spec.ts`: `application` e
+  `presentation` não importam `infrastructure`; `domain`/`shared` não importam
+  camadas externas). Cobrem também a taxonomia com
   `REFERENCE_REQUIRED`, a rejeição de `WIN` sem referência e o hash canônico do
   inbox com JSON reordenado.
 - **Integração** (`bun run test:integration`): PostgreSQL e LocalStack reais via
