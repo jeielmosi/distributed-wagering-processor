@@ -1,0 +1,11 @@
+export const UNIT_OF_WORK = Symbol('UNIT_OF_WORK');
+export const CLOCK = Symbol('CLOCK');
+export const WALLET_REPOSITORY = Symbol('WALLET_REPOSITORY');
+export const WAGER_TRANSACTION_REPOSITORY = Symbol('WAGER_TRANSACTION_REPOSITORY');
+export const LEDGER_ENTRY_REPOSITORY = Symbol('LEDGER_ENTRY_REPOSITORY');
+export const INBOX_REPOSITORY = Symbol('INBOX_REPOSITORY');
+export const OUTBOX_REPOSITORY = Symbol('OUTBOX_REPOSITORY');
+export const LOGGER = Symbol('LOGGER');
+export const METRICS = Symbol('METRICS');
+export const PERSISTENCE_ERROR_TRANSLATOR = Symbol('PERSISTENCE_ERROR_TRANSLATOR');
+export const READINESS = Symbol('READINESS');

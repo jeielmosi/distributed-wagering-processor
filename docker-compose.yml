@@ -1,0 +1,135 @@
+services:
+  postgres:
+    image: postgres:16.14-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-wagering}
+    ports:
+      - '127.0.0.1:${POSTGRES_PORT:-5432}:5432'
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-wagering}']
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 5s
+
+  localstack:
+    image: localstack/localstack:4.4.0
+    environment:
+      SERVICES: sqs
+      DEBUG: ${LOCALSTACK_DEBUG:-0}
+    ports:
+      - '127.0.0.1:${LOCALSTACK_PORT:-4566}:4566'
+    volumes:
+      - localstack_data:/var/lib/localstack
+    healthcheck:
+      test: ['CMD-SHELL', 'curl -fsS http://localhost:4566/_localstack/health >/dev/null']
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  init-sqs:
+    image: amazon/aws-cli:2.15.30
+    entrypoint: ['/bin/sh', '/opt/init/init-sqs.sh']
+    environment:
+      AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-us-east-1}
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      SQS_ENDPOINT: http://localstack:4566
+    volumes:
+      - ./scripts/init-sqs.sh:/opt/init/init-sqs.sh:ro
+    depends_on:
+      localstack:
+        condition: service_healthy
+    restart: 'no'
+
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ['bun', 'run', 'migration:up']
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql://postgres:postgres@postgres:5432/wagering}
+      MIGRATIONS_PATH: dist/infrastructure/persistence/migrations
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: 'no'
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    # /metrics é interno por contrato. O Compose publica a app apenas em
+    # loopback; em produção, bloqueie /metrics no proxy/rede (ver README).
+    ports:
+      - '127.0.0.1:${APP_PORT:-3000}:3000'
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      DATABASE_URL: ${DATABASE_URL:-postgresql://postgres:postgres@postgres:5432/wagering}
+      SQS_ENDPOINT: http://localstack:4566
+      AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-us-east-1}
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      SQS_WAGER_QUEUE_URL: http://localstack:4566/000000000000/wager-transactions.fifo
+      SQS_WAGER_DLQ_QUEUE_URL: http://localstack:4566/000000000000/wager-transactions-dlq.fifo
+      SQS_EVENTS_QUEUE_URL: http://localstack:4566/000000000000/wagering-events.fifo
+      SQS_EVENTS_DLQ_QUEUE_URL: http://localstack:4566/000000000000/wagering-events-dlq.fifo
+      SQS_VISIBILITY_TIMEOUT: '60'
+      SQS_MAX_NUMBER_OF_MESSAGES: '1'
+      MESSAGING_ENABLED: '1'
+      INSTANCE_ID: ${INSTANCE_ID:-app-1}
+      FAULT_AFTER_COMMIT_BEFORE_ACK: '0'
+    depends_on:
+      postgres:
+        condition: service_healthy
+      localstack:
+        condition: service_healthy
+      init-sqs:
+        condition: service_completed_successfully
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  consumer-crash:
+    profiles: ['crash']
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ['bun', 'dist/main.js']
+    environment:
+      NODE_ENV: production
+      PORT: 3001
+      DATABASE_URL: ${DATABASE_URL:-postgresql://postgres:postgres@postgres:5432/wagering}
+      SQS_ENDPOINT: http://localstack:4566
+      AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-us-east-1}
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      SQS_WAGER_QUEUE_URL: http://localstack:4566/000000000000/wager-transactions.fifo
+      SQS_WAGER_DLQ_QUEUE_URL: http://localstack:4566/000000000000/wager-transactions-dlq.fifo
+      SQS_EVENTS_QUEUE_URL: http://localstack:4566/000000000000/wagering-events.fifo
+      SQS_EVENTS_DLQ_QUEUE_URL: http://localstack:4566/000000000000/wagering-events-dlq.fifo
+      SQS_VISIBILITY_TIMEOUT: '5'
+      SQS_MAX_NUMBER_OF_MESSAGES: '1'
+      MESSAGING_ENABLED: '1'
+      INSTANCE_ID: consumer-crash
+      FAULT_AFTER_COMMIT_BEFORE_ACK: '1'
+    depends_on:
+      postgres:
+        condition: service_healthy
+      localstack:
+        condition: service_healthy
+      init-sqs:
+        condition: service_completed_successfully
+      migrate:
+        condition: service_completed_successfully
+    restart: 'no'
+
+volumes:
+  postgres_data:
+  localstack_data:
